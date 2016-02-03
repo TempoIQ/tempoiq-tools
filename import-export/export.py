@@ -16,13 +16,23 @@ DEFAULT_FILTERS = []
 #DEFAULT_FILTERS.append(Device.attributes['region'] == 'north')
 
 class Exporter(object):
-    def __init__(self, credentials, path='.'):
-        cli = tempoiq.session.get_session(credentials['host'],
-                                          credentials['key'],
-                                          credentials['secret'])
+    def __init__(self, opts, path='.'):
+        cli = tempoiq.session.get_session(opts['host'],
+                                          opts['key'],
+                                          opts['secret'])
         self.client = cli
         self.devices = []
         self.path = path
+        if 'resume_device' in opts:
+            self.resume_device = opts['resume_device']
+        else:
+            self.resume_device = None
+
+    def export(self):
+        if self.resume_device is None:
+            self.export_devices()
+
+        self.export_datapoints(start=DEFAULT_START, end=DEFAULT_END)
 
     def export_devices(self):
         req = self.client.query(Device)
@@ -43,12 +53,29 @@ class Exporter(object):
 
     def export_datapoints(self, start, end):
         if not self.devices:
-            print("Can't export data without devices!")
-            return
+            with open(self.file_in_path('devices.json')) as infile:
+                self.devices = json.load(infile)
 
-        outfile = open(self.file_in_path('datapoints.tsv'), 'w')
+        outfile = open(self.file_in_path('datapoints.tsv'), 'a')
+
+        started = (self.resume_device is None)
+        if started:
+            print("Exporting data from {} devices".format(len(self.devices)))
+
         for device in self.devices:
-            for (dev, sen, ts, val) in self._read_device(start, end, device):
+            try:
+                deviceKey = device.key
+            except AttributeError:
+                deviceKey = device["key"]
+
+            if not started:
+                if deviceKey == self.resume_device:
+                    print("resuming with device {}".format(deviceKey))
+                    started = True
+                else:
+                    continue
+
+            for (dev, sen, ts, val) in self._read_device(start, end, deviceKey):
                 outfile.write('{}\t{}\t{}\t{}\n'
                               .format(dev, sen, ts.isoformat(), val))
         outfile.close()
@@ -56,13 +83,13 @@ class Exporter(object):
     def file_in_path(self, filename):
         return path.join(self.path, filename)
 
-    def _read_device(self, start, end, device):
+    def _read_device(self, start, end, deviceKey):
         res = self.client.query(Sensor) \
-                         .filter(Device.key == device.key) \
+                         .filter(Device.key == deviceKey) \
                          .read(start=start, end=end)
         if res.successful != tempoiq.response.SUCCESS:
             print("Error reading data from device {}: {}-{}"
-                  .format(device.key, res.status, res.reason))
+                  .format(deviceKey, res.status, res.reason))
             return
 
         for row in res.data:
@@ -73,9 +100,9 @@ class Exporter(object):
 def main(argv):
     creds = {}
     try:
-        opts, args = getopt.getopt(argv, "n:k:s:")
+        opts, args = getopt.getopt(argv, "n:k:s:r:")
     except getopt.GetoptError:
-        print('pull_data.py -n <backend> -k <key> -s <secret>')
+        print('export.py -n <backend> -k <key> -s <secret> -r <device>')
         sys.exit(2)
     for opt, arg in opts:
         if opt == "-k":
@@ -84,13 +111,14 @@ def main(argv):
             creds['secret'] = arg
         elif opt == "-n":
             creds['host'] = arg
+        elif opt == "-r":
+            creds['resume_device'] = arg
 
     if not creds['host'].startswith('http'):
         creds['host'] = 'https://' + creds['host']
 
     exporter = Exporter(creds)
-    exporter.export_devices()
-    exporter.export_datapoints(start=DEFAULT_START, end=DEFAULT_END)
+    exporter.export()
 
 if __name__ == "__main__":
     main(sys.argv[1:])
