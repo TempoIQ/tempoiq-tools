@@ -17,13 +17,14 @@ import requests
 DEVICE_FILE = r"devices\.json"
 DATA_FILE = r"datapoints[0-9]*\.tsv"
 DATA_PATH = '.'
+POOL_SIZE=6
 
 class Importer(object):
-    def __init__(self, creds, pool_size=5):
+    def __init__(self, creds, pool_size=POOL_SIZE):
         self.client = get_session(creds['host'],
                                   creds['key'],
                                   creds['secret'])
-        self.queue = JoinableQueue()
+        self.queue = JoinableQueue(maxsize=POOL_SIZE*2)
         for i in range(pool_size):
             gevent.spawn(self.worker)
 
